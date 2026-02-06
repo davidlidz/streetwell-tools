@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StreetWell Capital Stack Modeler</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'sw-gold': '#E9A319',
+            'sw-gold-light': '#F5B942',
+            'sw-gold-dark': '#C78A0E',
+            'sw-black': '#1A1A1A',
+            'sw-gray': '#2D2D2D'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    input[type="range"] { -webkit-appearance: none; height: 10px; border-radius: 5px; background: #e5e7eb; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #E9A319; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.3); border: 2px solid white; }
+    input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: #E9A319; cursor: pointer; border: 2px solid white; }
+    .sw-gradient { background: linear-gradient(135deg, #1A1A1A 0%, #2D2D2D 100%); }
+  </style>
+</head>
+<body class="bg-gray-100">
+  <div id="root"></div>
+  <script>
+    const { useState, useMemo } = React;
+
+    const formatCurrency = (num) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(num);
+    const formatPercent = (num) => (num * 100).toFixed(2) + '%';
+
+    // Loan constants
+    const INTEREST_RATE = 0.03;
+    const TERM_YEARS = 30;
+    const MONTHLY_RATE = INTEREST_RATE / 12;
+    const N_PAYMENTS = TERM_YEARS * 12;
+    const PAYMENT_FACTOR = (MONTHLY_RATE * Math.pow(1 + MONTHLY_RATE, N_PAYMENTS)) / (Math.pow(1 + MONTHLY_RATE, N_PAYMENTS) - 1);
+
+    const EXPENSE_RATES = { management: 0.08, maintenance: 0.10, taxes: 0.05, insurance: 0.08, utilities: 0.03, vacancy: 0.05 };
+    const TOTAL_EXPENSE_RATE = Object.values(EXPENSE_RATES).reduce((a, b) => a + b, 0);
+
+    const calcMaxBalance = (noi, targetDSCR) => {
+      const monthlyDS = (noi / targetDSCR) / 12;
+      return monthlyDS / PAYMENT_FACTOR;
+    };
+
+    // StreetWell Logo Component
+    const StreetWellLogo = ({ variant = 'dark', size = 'md' }) => {
+      const sizes = { sm: { width: 140, height: 36 }, md: { width: 180, height: 46 }, lg: { width: 220, height: 56 } };
+      const { width, height } = sizes[size];
+      const bgColor = variant === 'dark' ? '#1A1A1A' : '#E9A319';
+      const textColor = variant === 'dark' ? '#E9A319' : '#1A1A1A';
+
+      return React.createElement('svg', { width, height, viewBox: '0 0 180 46' },
+        React.createElement('rect', { x: 1, y: 1, width: 178, height: 44, rx: 10, fill: bgColor, stroke: variant === 'light' ? '#1A1A1A' : 'none', strokeWidth: 2 }),
+        React.createElement('text', { x: 90, y: 30, textAnchor: 'middle', fill: textColor, fontSize: 18, fontWeight: 600, letterSpacing: 3, fontFamily: 'Inter, system-ui, sans-serif' }, 'STREETWELL')
+      );
+    };
+
+    const DetailSection = ({ title, children, defaultOpen = false }) => {
+      const [isOpen, setIsOpen] = useState(defaultOpen);
+      return React.createElement('div', { className: 'border border-gray-200 rounded-lg overflow-hidden mb-3' },
+        React.createElement('button', {
+          onClick: () => setIsOpen(!isOpen),
+          className: 'w-full flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 transition text-left'
+        },
+          React.createElement('span', { className: 'font-medium text-gray-700' }, title),
+          React.createElement('span', { className: 'text-sw-gold text-xl font-bold' }, isOpen ? '−' : '+')
+        ),
+        isOpen && React.createElement('div', { className: 'p-4 bg-white' }, children)
+      );
+    };
+
+    const DetailRow = ({ label, amount, isSubtotal = false, isTotal = false, indent = false }) => {
+      const textColor = amount < 0 ? 'text-red-600' : 'text-gray-800';
+      const bgColor = isTotal ? 'bg-sw-gold/10' : (isSubtotal ? 'bg-gray-50' : '');
+      const fontWeight = (isTotal || isSubtotal) ? 'font-semibold' : 'font-normal';
+      return React.createElement('div', { className: `flex justify-between py-2 px-3 ${bgColor} ${indent ? 'pl-6' : ''} rounded` },
+        React.createElement('span', { className: `text-sm ${isTotal ? 'font-bold text-sw-black' : fontWeight + ' text-gray-600'}` }, label),
+        React.createElement('span', { className: `text-sm ${fontWeight} ${isTotal ? 'text-sw-black' : textColor}` },
+          amount < 0 ? '(' + formatCurrency(Math.abs(amount)) + ')' : formatCurrency(amount)
+        )
+      );
+    };
+
+    const PropertyCard = ({ property, grantAmount, setGrantAmount, targetDSCR }) => {
+      const { address, type, sf, originalLoan, monthlyRent, maxGrant } = property;
+      const [showDetails, setShowDetails] = useState(false);
+
+      const metrics = useMemo(() => {
+        const annualGross = monthlyRent * 12;
+        const expenses = {};
+        Object.keys(EXPENSE_RATES).forEach(key => { expenses[key] = annualGross * EXPENSE_RATES[key]; });
+        const totalOpEx = annualGross * TOTAL_EXPENSE_RATE;
+        const noi = annualGross - totalOpEx;
+
+        const postGrantBalance = originalLoan - grantAmount;
+        const monthlyPayment = postGrantBalance * PAYMENT_FACTOR;
+        const annualDebtService = monthlyPayment * 12;
+        const annualInterest = postGrantBalance * INTEREST_RATE;
+        const annualPrincipal = annualDebtService - annualInterest;
+
+        const annualCashFlow = noi - annualDebtService;
+        const monthlyCashFlow = annualCashFlow / 12;
+        const dscr = annualDebtService > 0 ? noi / annualDebtService : Infinity;
+        const capRate = postGrantBalance > 0 ? noi / postGrantBalance : 0;
+
+        const maxBalanceForTargetDSCR = calcMaxBalance(noi, targetDSCR);
+        const grantNeededForTarget = Math.max(0, originalLoan - maxBalanceForTargetDSCR);
+        const maxBalanceForBreakeven = calcMaxBalance(noi, 1.0);
+        const grantNeededForBreakeven = Math.max(0, originalLoan - maxBalanceForBreakeven);
+
+        return { annualGross, expenses, totalOpEx, noi, postGrantBalance, annualDebtService, annualInterest, annualPrincipal, annualCashFlow, monthlyCashFlow, dscr, capRate, maxBalanceForTargetDSCR, grantNeededForTarget, maxBalanceForBreakeven, grantNeededForBreakeven };
+      }, [originalLoan, monthlyRent, grantAmount, targetDSCR]);
+
+      const meetsTargetDSCR = metrics.dscr >= targetDSCR;
+      const cashFlowPositive = metrics.annualCashFlow >= 0;
+
+      return React.createElement('div', { className: 'bg-white rounded-xl shadow-lg p-6 mb-6 border-l-4 border-sw-gold' },
+        // Header
+        React.createElement('div', { className: 'flex justify-between items-start mb-4' },
+          React.createElement('div', null,
+            React.createElement('h3', { className: 'text-xl font-bold text-sw-black' }, address),
+            React.createElement('p', { className: 'text-sm text-gray-500' }, `${type} • ${sf.toLocaleString()} sf`)
+          ),
+          React.createElement('div', { className: 'text-right' },
+            React.createElement('p', { className: 'text-xs text-gray-500 uppercase tracking-wide' }, 'Monthly Cash Flow'),
+            React.createElement('p', { className: `text-2xl font-bold ${cashFlowPositive ? 'text-green-600' : 'text-red-600'}` },
+              (metrics.monthlyCashFlow < 0 ? '-' : '+') + formatCurrency(Math.abs(metrics.monthlyCashFlow))
+            )
+          )
+        ),
+
+        // Grant Slider
+        React.createElement('div', { className: 'mb-6' },
+          React.createElement('div', { className: 'flex justify-between items-center mb-2' },
+            React.createElement('label', { className: 'text-sm font-medium text-gray-700' }, 'Grant Amount'),
+            React.createElement('span', { className: 'text-lg font-bold text-sw-gold' }, formatCurrency(grantAmount))
+          ),
+          React.createElement('input', {
+            type: 'range', min: 0, max: maxGrant, step: 5000, value: grantAmount,
+            onChange: (e) => setGrantAmount(Number(e.target.value)),
+            className: 'w-full cursor-pointer'
+          }),
+          React.createElement('div', { className: 'flex justify-between text-xs text-gray-400 mt-1' },
+            React.createElement('span', null, '$0'),
+            React.createElement('span', null, formatCurrency(maxGrant))
+          )
+        ),
+
+        // DSCR Status
+        React.createElement('div', { className: `mb-6 p-4 rounded-lg ${meetsTargetDSCR ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}` },
+          React.createElement('div', { className: 'flex items-center justify-between' },
+            React.createElement('div', null,
+              React.createElement('p', { className: `text-sm font-semibold ${meetsTargetDSCR ? 'text-green-800' : 'text-red-800'}` },
+                meetsTargetDSCR ? `✓ Meets ${targetDSCR.toFixed(2)}x DSCR Target` : `⚠ Below ${targetDSCR.toFixed(2)}x DSCR Target`
+              ),
+              React.createElement('p', { className: 'text-xs text-gray-600 mt-1' },
+                meetsTargetDSCR ? 'Project meets lender requirements' : `Need ${formatCurrency(Math.max(0, metrics.grantNeededForTarget - grantAmount))} more in grants`
+              )
+            ),
+            React.createElement('div', { className: 'text-right' },
+              React.createElement('p', { className: 'text-xs text-gray-500' }, 'DSCR'),
+              React.createElement('p', { className: `text-2xl font-bold ${meetsTargetDSCR ? 'text-green-600' : 'text-red-600'}` }, metrics.dscr.toFixed(2) + 'x')
+            )
+          )
+        ),
+
+        // Quick Metrics
+        React.createElement('div', { className: 'grid grid-cols-4 gap-3 mb-4' },
+          React.createElement('div', { className: 'bg-gray-50 rounded-lg p-3 text-center' },
+            React.createElement('p', { className: 'text-xs text-gray-500 uppercase tracking-wide' }, 'NOI'),
+            React.createElement('p', { className: 'text-lg font-bold text-sw-black' }, formatCurrency(metrics.noi))
+          ),
+          React.createElement('div', { className: 'bg-gray-50 rounded-lg p-3 text-center' },
+            React.createElement('p', { className: 'text-xs text-gray-500 uppercase tracking-wide' }, 'Debt Service'),
+            React.createElement('p', { className: 'text-lg font-bold text-sw-black' }, formatCurrency(metrics.annualDebtService))
+          ),
+          React.createElement('div', { className: 'bg-gray-50 rounded-lg p-3 text-center' },
+            React.createElement('p', { className: 'text-xs text-gray-500 uppercase tracking-wide' }, 'Loan Balance'),
+            React.createElement('p', { className: 'text-lg font-bold text-sw-black' }, formatCurrency(metrics.postGrantBalance))
+          ),
+          React.createElement('div', { className: 'bg-sw-gold/10 rounded-lg p-3 text-center' },
+            React.createElement('p', { className: 'text-xs text-gray-500 uppercase tracking-wide' }, 'Cap Rate'),
+            React.createElement('p', { className: 'text-lg font-bold text-sw-gold-dark' }, formatPercent(metrics.capRate))
+          )
+        ),
+
+        // Details Toggle
+        React.createElement('button', {
+          onClick: () => setShowDetails(!showDetails),
+          className: 'w-full py-3 text-sm font-medium text-sw-gold hover:text-sw-gold-dark hover:bg-sw-gold/5 rounded-lg transition flex items-center justify-center gap-2'
+        }, showDetails ? '▲ Hide Financial Details' : '▼ Show Financial Details'),
+
+        // Expandable Details
+        showDetails && React.createElement('div', { className: 'mt-4 space-y-2' },
+          React.createElement(DetailSection, { title: '📈 Income', defaultOpen: true },
+            React.createElement(DetailRow, { label: 'Monthly Rent', amount: metrics.annualGross / 12 }),
+            React.createElement(DetailRow, { label: 'Annual Gross Income', amount: metrics.annualGross, isSubtotal: true })
+          ),
+          React.createElement(DetailSection, { title: '📉 Operating Expenses (39%)', defaultOpen: true },
+            React.createElement(DetailRow, { label: 'Management (8%)', amount: -metrics.expenses.management, indent: true }),
+            React.createElement(DetailRow, { label: 'Maintenance (10%)', amount: -metrics.expenses.maintenance, indent: true }),
+            React.createElement(DetailRow, { label: 'Taxes (5%)', amount: -metrics.expenses.taxes, indent: true }),
+            React.createElement(DetailRow, { label: 'Insurance (8%)', amount: -metrics.expenses.insurance, indent: true }),
+            React.createElement(DetailRow, { label: 'Utilities (3%)', amount: -metrics.expenses.utilities, indent: true }),
+            React.createElement(DetailRow, { label: 'Vacancy (5%)', amount: -metrics.expenses.vacancy, indent: true }),
+            React.createElement(DetailRow, { label: 'Total Operating Expenses', amount: -metrics.totalOpEx, isSubtotal: true })
+          ),
+          React.createElement('div', { className: 'bg-sw-gold/10 rounded-lg p-3' },
+            React.createElement(DetailRow, { label: 'NET OPERATING INCOME (NOI)', amount: metrics.noi, isTotal: true })
+          ),
+          React.createElement(DetailSection, { title: '🏦 Debt Service (P+I @ 3%/30yr)', defaultOpen: true },
+            React.createElement(DetailRow, { label: 'Original Loan', amount: originalLoan }),
+            React.createElement(DetailRow, { label: 'Less: Grants', amount: -grantAmount }),
+            React.createElement(DetailRow, { label: 'Remaining Balance', amount: metrics.postGrantBalance, isSubtotal: true }),
+            React.createElement('div', { className: 'border-t border-gray-200 mt-2 pt-2' }),
+            React.createElement(DetailRow, { label: 'Annual Interest', amount: -metrics.annualInterest, indent: true }),
+            React.createElement(DetailRow, { label: 'Annual Principal', amount: -metrics.annualPrincipal, indent: true }),
+            React.createElement(DetailRow, { label: 'Total Debt Service', amount: -metrics.annualDebtService, isSubtotal: true })
+          ),
+          React.createElement('div', { className: `rounded-lg p-3 ${cashFlowPositive ? 'bg-green-100' : 'bg-red-100'}` },
+            React.createElement(DetailRow, { label: 'NET CASH FLOW', amount: metrics.annualCashFlow, isTotal: true }),
+            React.createElement('p', { className: `text-center text-sm font-medium mt-1 ${cashFlowPositive ? 'text-green-700' : 'text-red-700'}` },
+              formatCurrency(metrics.monthlyCashFlow) + '/month'
+            )
+          ),
+          React.createElement(DetailSection, { title: '🎯 Grant Analysis', defaultOpen: true },
+            React.createElement(DetailRow, { label: 'Current Grant', amount: grantAmount }),
+            React.createElement('div', { className: 'border-t border-gray-200 mt-2 pt-2' }),
+            React.createElement(DetailRow, { label: 'Max Balance for 1.0x DSCR', amount: metrics.maxBalanceForBreakeven }),
+            React.createElement(DetailRow, { label: 'Grant for Breakeven', amount: metrics.grantNeededForBreakeven }),
+            React.createElement(DetailRow, { label: 'Additional Needed', amount: Math.max(0, metrics.grantNeededForBreakeven - grantAmount), isSubtotal: true }),
+            React.createElement('div', { className: 'border-t border-gray-200 mt-2 pt-2' }),
+            React.createElement(DetailRow, { label: `Max Balance for ${targetDSCR.toFixed(2)}x`, amount: metrics.maxBalanceForTargetDSCR }),
+            React.createElement(DetailRow, { label: `Grant for ${targetDSCR.toFixed(2)}x DSCR`, amount: metrics.grantNeededForTarget }),
+            React.createElement(DetailRow, { label: 'Additional Needed', amount: Math.max(0, metrics.grantNeededForTarget - grantAmount), isSubtotal: true })
+          )
+        )
+      );
+    };
+
+    function App() {
+      const [targetDSCR, setTargetDSCR] = useState(1.25);
+      const [grants, setGrants] = useState({ westwood: 50000, northave: 50000 });
+
+      const properties = [
+        { id: 'westwood', address: '1838 Westwood Ave', type: 'Single-family', sf: 1300, originalLoan: 350000, monthlyRent: 1600, maxGrant: 250000 },
+        { id: 'northave', address: '1901 W North Ave', type: '3-unit', sf: 2300, originalLoan: 700000, monthlyRent: 3900, maxGrant: 450000 }
+      ];
+
+      const totals = useMemo(() => {
+        let totalNOI = 0, totalDebtService = 0, totalGrants = 0, totalOriginalLoan = 0, totalPostGrant = 0;
+        let totalGrantNeededBreakeven = 0, totalGrantNeededTarget = 0;
+
+        properties.forEach(prop => {
+          const noi = prop.monthlyRent * 12 * (1 - TOTAL_EXPENSE_RATE);
+          const postGrantBalance = prop.originalLoan - grants[prop.id];
+          const debtService = postGrantBalance * PAYMENT_FACTOR * 12;
+
+          totalNOI += noi;
+          totalDebtService += debtService;
+          totalGrants += grants[prop.id];
+          totalOriginalLoan += prop.originalLoan;
+          totalPostGrant += postGrantBalance;
+          totalGrantNeededBreakeven += Math.max(0, prop.originalLoan - calcMaxBalance(noi, 1.0));
+          totalGrantNeededTarget += Math.max(0, prop.originalLoan - calcMaxBalance(noi, targetDSCR));
+        });
+
+        return {
+          totalNOI, totalDebtService, totalCashFlow: totalNOI - totalDebtService, totalGrants,
+          portfolioDSCR: totalNOI / totalDebtService, portfolioCapRate: totalNOI / totalPostGrant,
+          totalGrantNeededBreakeven, totalGrantNeededTarget,
+          additionalForBreakeven: Math.max(0, totalGrantNeededBreakeven - totalGrants),
+          additionalForTarget: Math.max(0, totalGrantNeededTarget - totalGrants)
+        };
+      }, [grants, targetDSCR]);
+
+      const meetsTarget = totals.portfolioDSCR >= targetDSCR;
+
+      return React.createElement('div', { className: 'min-h-screen bg-gray-100' },
+        // Header
+        React.createElement('header', { className: 'sw-gradient text-white py-6 px-6 shadow-lg' },
+          React.createElement('div', { className: 'max-w-4xl mx-auto flex items-center justify-between' },
+            React.createElement(StreetWellLogo, { variant: 'dark', size: 'md' }),
+            React.createElement('div', { className: 'text-right' },
+              React.createElement('h1', { className: 'text-xl font-bold' }, 'Capital Stack Modeler'),
+              React.createElement('p', { className: 'text-sm text-gray-400' }, 'GGRF Projects Analysis')
+            )
+          )
+        ),
+
+        React.createElement('div', { className: 'max-w-4xl mx-auto p-6' },
+          // Target DSCR Control
+          React.createElement('div', { className: 'bg-white rounded-xl shadow-lg p-6 mb-6' },
+            React.createElement('div', { className: 'flex items-center justify-between mb-4' },
+              React.createElement('div', null,
+                React.createElement('h2', { className: 'text-lg font-semibold text-sw-black' }, 'Target DSCR'),
+                React.createElement('p', { className: 'text-sm text-gray-500' }, 'Debt Service Coverage Ratio')
+              ),
+              React.createElement('span', { className: 'text-3xl font-bold text-sw-gold' }, targetDSCR.toFixed(2) + 'x')
+            ),
+            React.createElement('input', {
+              type: 'range', min: 1.0, max: 1.5, step: 0.05, value: targetDSCR,
+              onChange: (e) => setTargetDSCR(Number(e.target.value)),
+              className: 'w-full cursor-pointer'
+            }),
+            React.createElement('div', { className: 'flex justify-between text-xs text-gray-400 mt-1' },
+              React.createElement('span', null, '1.00x Breakeven'),
+              React.createElement('span', null, '1.25x Standard'),
+              React.createElement('span', null, '1.50x Conservative')
+            )
+          ),
+
+          // Quick Actions
+          React.createElement('div', { className: 'flex gap-3 mb-6' },
+            React.createElement('button', {
+              onClick: () => setGrants({ westwood: 50000, northave: 50000 }),
+              className: 'flex-1 bg-white hover:bg-gray-50 text-gray-700 font-medium py-3 px-4 rounded-lg shadow border border-gray-200 transition text-sm'
+            }, 'Reset to GGRF'),
+            React.createElement('button', {
+              onClick: () => {
+                properties.forEach(prop => {
+                  const noi = prop.monthlyRent * 12 * (1 - TOTAL_EXPENSE_RATE);
+                  const grantNeeded = Math.max(0, prop.originalLoan - calcMaxBalance(noi, 1.0));
+                  setGrants(prev => ({ ...prev, [prop.id]: Math.min(prop.maxGrant, Math.round(grantNeeded / 1000) * 1000) }));
+                });
+              },
+              className: 'flex-1 bg-sw-black hover:bg-sw-gray text-white font-medium py-3 px-4 rounded-lg shadow transition text-sm'
+            }, 'Breakeven (1.0x)'),
+            React.createElement('button', {
+              onClick: () => {
+                properties.forEach(prop => {
+                  const noi = prop.monthlyRent * 12 * (1 - TOTAL_EXPENSE_RATE);
+                  const grantNeeded = Math.max(0, prop.originalLoan - calcMaxBalance(noi, targetDSCR));
+                  setGrants(prev => ({ ...prev, [prop.id]: Math.min(prop.maxGrant, Math.round(grantNeeded / 1000) * 1000) }));
+                });
+              },
+              className: 'flex-1 bg-sw-gold hover:bg-sw-gold-dark text-sw-black font-semibold py-3 px-4 rounded-lg shadow transition text-sm'
+            }, `Target (${targetDSCR.toFixed(2)}x)`)
+          ),
+
+          // Property Cards
+          properties.map(prop => React.createElement(PropertyCard, {
+            key: prop.id, property: prop, grantAmount: grants[prop.id],
+            setGrantAmount: (val) => setGrants(prev => ({ ...prev, [prop.id]: val })),
+            targetDSCR
+          })),
+
+          // Portfolio Summary
+          React.createElement('div', { className: `rounded-xl shadow-lg overflow-hidden` },
+            React.createElement('div', { className: 'sw-gradient text-white p-6' },
+              React.createElement('div', { className: 'flex items-center justify-between mb-4' },
+                React.createElement('h2', { className: 'text-xl font-bold' }, 'Portfolio Summary'),
+                React.createElement(StreetWellLogo, { variant: 'dark', size: 'sm' })
+              ),
+              React.createElement('div', { className: 'grid grid-cols-2 md:grid-cols-5 gap-4 mb-4' },
+                React.createElement('div', null,
+                  React.createElement('p', { className: 'text-xs text-gray-400 uppercase tracking-wide' }, 'Total NOI'),
+                  React.createElement('p', { className: 'text-xl font-bold' }, formatCurrency(totals.totalNOI))
+                ),
+                React.createElement('div', null,
+                  React.createElement('p', { className: 'text-xs text-gray-400 uppercase tracking-wide' }, 'Debt Service'),
+                  React.createElement('p', { className: 'text-xl font-bold' }, formatCurrency(totals.totalDebtService))
+                ),
+                React.createElement('div', null,
+                  React.createElement('p', { className: 'text-xs text-gray-400 uppercase tracking-wide' }, 'Cash Flow'),
+                  React.createElement('p', { className: `text-xl font-bold ${totals.totalCashFlow >= 0 ? 'text-green-400' : 'text-red-400'}` },
+                    formatCurrency(totals.totalCashFlow) + '/yr'
+                  )
+                ),
+                React.createElement('div', null,
+                  React.createElement('p', { className: 'text-xs text-gray-400 uppercase tracking-wide' }, 'DSCR'),
+                  React.createElement('p', { className: `text-xl font-bold ${meetsTarget ? 'text-green-400' : 'text-red-400'}` },
+                    totals.portfolioDSCR.toFixed(2) + 'x'
+                  )
+                ),
+                React.createElement('div', null,
+                  React.createElement('p', { className: 'text-xs text-gray-400 uppercase tracking-wide' }, 'Grants'),
+                  React.createElement('p', { className: 'text-xl font-bold text-sw-gold' }, formatCurrency(totals.totalGrants))
+                )
+              ),
+              React.createElement('div', { className: `p-4 rounded-lg ${meetsTarget ? 'bg-green-600/20 border border-green-500/30' : 'bg-red-600/20 border border-red-500/30'}` },
+                React.createElement('p', { className: 'font-bold' },
+                  meetsTarget ? `✓ Portfolio meets ${targetDSCR.toFixed(2)}x DSCR target` : `⚠ Below ${targetDSCR.toFixed(2)}x target`
+                ),
+                !meetsTarget && React.createElement('p', { className: 'text-sm mt-1 text-gray-300' },
+                  `Need ${formatCurrency(totals.additionalForTarget)} more (${formatCurrency(totals.totalGrantNeededTarget)} total)`
+                )
+              )
+            ),
+            React.createElement('div', { className: 'bg-sw-black/90 text-white p-4' },
+              React.createElement('div', { className: 'grid grid-cols-3 gap-4 text-sm' },
+                React.createElement('div', { className: 'text-center' },
+                  React.createElement('p', { className: 'text-gray-400' }, 'Current'),
+                  React.createElement('p', { className: 'text-lg font-bold text-sw-gold' }, formatCurrency(totals.totalGrants))
+                ),
+                React.createElement('div', { className: 'text-center' },
+                  React.createElement('p', { className: 'text-gray-400' }, 'For 1.0x'),
+                  React.createElement('p', { className: 'text-lg font-bold' }, formatCurrency(totals.totalGrantNeededBreakeven)),
+                  React.createElement('p', { className: 'text-xs text-gray-500' }, '+' + formatCurrency(totals.additionalForBreakeven))
+                ),
+                React.createElement('div', { className: 'text-center' },
+                  React.createElement('p', { className: 'text-gray-400' }, `For ${targetDSCR.toFixed(2)}x`),
+                  React.createElement('p', { className: 'text-lg font-bold' }, formatCurrency(totals.totalGrantNeededTarget)),
+                  React.createElement('p', { className: 'text-xs text-gray-500' }, '+' + formatCurrency(totals.additionalForTarget))
+                )
+              )
+            )
+          ),
+
+          // Footer
+          React.createElement('p', { className: 'text-center text-xs text-gray-500 mt-6' },
+            'DSCR = NOI ÷ Debt Service (P+I) • 3% interest • 30-year term • 39% operating expenses'
+          )
+        )
+      );
+    }
+
+    ReactDOM.render(React.createElement(App), document.getElementById('root'));
+  </script>
+</body>
+</html>
